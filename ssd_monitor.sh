@@ -37,29 +37,28 @@ curl -s -L "$ICON_URL" -o "$ICON_FILE"
 
 if [ -f "$ICON_FILE" ] && [ -s "$ICON_FILE" ]; then
     echo "✅ Icon downloaded successfully!"
-    mkdir -p "$APP_NAME.app/Contents/Resources"
-    cp "$ICON_FILE" "$APP_NAME.app/Contents/Resources/app_icon.png"
     
-    # Convert to ICNS if possible
-    if command -v sips &> /dev/null && command -v iconutil &> /dev/null; then
-        ICONSET_DIR="AppIcon.iconset"
-        mkdir -p "$ICONSET_DIR"
-        
-        for SIZE in 16 32 64 128 256 512 1024; do
-            sips -z $SIZE $SIZE "$ICON_FILE" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}.png" 2>/dev/null || true
-            RETINA=$((SIZE * 2))
-            sips -z $RETINA $RETINA "$ICON_FILE" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}@2x.png" 2>/dev/null || true
-        done
-        
-        if command -v iconutil &> /dev/null; then
-            iconutil -c icns "$ICONSET_DIR" -o "$APP_NAME.app/Contents/Resources/app_icon.icns" 2>/dev/null
-            echo "✅ Created .icns file"
-        fi
-        rm -rf "$ICONSET_DIR"
+    # Create iconset for the app bundle
+    mkdir -p AppIcon.iconset
+    
+    # Generate various sizes for the app icon
+    for SIZE in 16 32 64 128 256 512 1024; do
+        sips -z $SIZE $SIZE "$ICON_FILE" --out "AppIcon.iconset/icon_${SIZE}x${SIZE}.png" 2>/dev/null || true
+        RETINA=$((SIZE * 2))
+        sips -z $RETINA $RETINA "$ICON_FILE" --out "AppIcon.iconset/icon_${SIZE}x${SIZE}@2x.png" 2>/dev/null || true
+    done
+    
+    if command -v iconutil &> /dev/null; then
+        iconutil -c icns "AppIcon.iconset" -o "app_icon.icns" 2>/dev/null
+        echo "✅ Created .icns file"
+    else
+        cp "$ICON_FILE" "app_icon.icns"
     fi
+    
+    rm -rf "AppIcon.iconset"
 else
-    echo "⚠ Download failed, creating fallback icon"
-    echo "💾" > "$APP_NAME.app/Contents/Resources/app_icon.txt"
+    echo "⚠ Download failed, using fallback icon"
+    echo "💾" > app_icon.txt
 fi
 
 # ===============================================
@@ -70,10 +69,9 @@ cat > "src/SSDMonitor.h" << 'EOF'
 #import <Foundation/Foundation.h>
 
 @interface SSDMonitor : NSObject
-- (void)startMonitoring;
-- (void)stopMonitoring;
 - (NSDictionary *)getStorageInfo;
 - (NSString *)formatBytes:(unsigned long long)bytes;
+- (NSString *)formatBytesShort:(unsigned long long)bytes;
 @end
 EOF
 
@@ -87,10 +85,7 @@ cat > "src/SSDMonitor.m" << 'EOF'
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSError *error = nil;
     
-    // Get system volume path
     NSURL *rootURL = [NSURL fileURLWithPath:@"/"];
-    
-    // Get attributes for the root volume
     NSDictionary *attributes = [fileManager attributesOfFileSystemForPath:@"/" error:&error];
     
     if (error) {
@@ -101,11 +96,8 @@ cat > "src/SSDMonitor.m" << 'EOF'
     unsigned long long freeSpace = [[attributes objectForKey:NSFileSystemFreeSize] unsignedLongLongValue];
     unsigned long long usedSpace = totalSpace - freeSpace;
     
-    // Check if it's an SSD (on modern macOS, this is typically the case for internal drives)
-    // We'll check if it's an SSD by looking at the volume name or using system_profiler
-    BOOL isSSD = YES; // Default assumption
-    
-    // Try to get disk info
+    // Check if it's an SSD
+    BOOL isSSD = YES;
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/usr/sbin/system_profiler";
     task.arguments = @[@"SPStorageDataType", @"-json"];
@@ -125,12 +117,10 @@ cat > "src/SSDMonitor.m" << 'EOF'
             for (NSDictionary *item in storage) {
                 NSString *mountPoint = item[@"mount_point"];
                 if ([mountPoint isEqualToString:@"/"]) {
-                    // Check if it's an SSD or PCIe drive
                     NSString *mediaName = item[@"_name"] ?: @"";
                     NSString *protocol = item[@"protocol"] ?: @"";
                     NSString *mediumType = item[@"medium_type"] ?: @"";
                     
-                    // Look for SSD indicators
                     NSArray *ssdKeywords = @[@"SSD", @"NVMe", @"PCIe", @"Solid State", @"Flash"];
                     for (NSString *keyword in ssdKeywords) {
                         if ([mediaName rangeOfString:keyword options:NSCaseInsensitiveSearch].location != NSNotFound ||
@@ -139,12 +129,6 @@ cat > "src/SSDMonitor.m" << 'EOF'
                             isSSD = YES;
                             break;
                         }
-                    }
-                    
-                    // Get SMART status if available
-                    NSString *smartStatus = item[@"smart_status"] ?: @"";
-                    if ([smartStatus isEqualToString:@"Verified"]) {
-                        isSSD = YES;
                     }
                     break;
                 }
@@ -156,8 +140,7 @@ cat > "src/SSDMonitor.m" << 'EOF'
         @"total": @(totalSpace),
         @"free": @(freeSpace),
         @"used": @(usedSpace),
-        @"isSSD": @(isSSD),
-        @"usedPercent": @((double)usedSpace / totalSpace * 100)
+        @"isSSD": @(isSSD)
     };
 }
 
@@ -169,18 +152,20 @@ cat > "src/SSDMonitor.m" << 'EOF'
     } else if (bytes < 1024 * 1024 * 1024) {
         return [NSString stringWithFormat:@"%.1f MB", (double)bytes / (1024 * 1024)];
     } else if (bytes < 1024 * 1024 * 1024 * 1024ULL) {
-        return [NSString stringWithFormat:@"%.2f GB", (double)bytes / (1024 * 1024 * 1024)];
+        return [NSString stringWithFormat:@"%.1f GB", (double)bytes / (1024 * 1024 * 1024)];
     } else {
-        return [NSString stringWithFormat:@"%.2f TB", (double)bytes / (1024 * 1024 * 1024 * 1024ULL)];
+        return [NSString stringWithFormat:@"%.1f TB", (double)bytes / (1024 * 1024 * 1024 * 1024ULL)];
     }
 }
 
-- (void)startMonitoring {
-    // This method is called by the AppDelegate
-}
-
-- (void)stopMonitoring {
-    // Cleanup
+- (NSString *)formatBytesShort:(unsigned long long)bytes {
+    if (bytes < 1024 * 1024 * 1024) {
+        return [NSString stringWithFormat:@"%.0f MB", (double)bytes / (1024 * 1024)];
+    } else if (bytes < 1024 * 1024 * 1024 * 1024ULL) {
+        return [NSString stringWithFormat:@"%.0f GB", (double)bytes / (1024 * 1024 * 1024)];
+    } else {
+        return [NSString stringWithFormat:@"%.1f TB", (double)bytes / (1024 * 1024 * 1024 * 1024ULL)];
+    }
 }
 
 @end
@@ -203,6 +188,7 @@ cat > "src/AppDelegate.m" << 'EOF'
 @property (nonatomic, strong) NSMenuItem *openStorageItem;
 @property (nonatomic, strong) NSMenuItem *refreshMenuItem;
 @property (nonatomic, strong) NSMenuItem *quitMenuItem;
+@property (nonatomic, strong) NSMenuItem *detailsMenuItem;
 @end
 
 @implementation AppDelegate
@@ -210,31 +196,15 @@ cat > "src/AppDelegate.m" << 'EOF'
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     self.monitor = [[SSDMonitor alloc] init];
     
-    // Create status bar item
+    // Create status bar item - text only, no icon
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
-    self.statusItem.button.font = [NSFont systemFontOfSize:12 weight:NSFontWeightMedium];
+    self.statusItem.button.font = [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightMedium];
     
-    // Set icon - try to use downloaded icon if available
-    NSImage *iconImage = nil;
-    NSString *iconPath = [[NSBundle mainBundle] pathForResource:@"app_icon" ofType:@"png"];
-    if (iconPath) {
-        iconImage = [[NSImage alloc] initWithContentsOfFile:iconPath];
-        [iconImage setSize:NSMakeSize(18, 18)];
-    } else {
-        // Fallback to system symbol
-        iconImage = [NSImage imageWithSystemSymbolName:@"internaldrive" accessibilityDescription:@"SSD"];
-        [iconImage setSize:NSMakeSize(18, 18)];
-    }
-    
-    if (iconImage) {
-        [self.statusItem.button setImage:iconImage];
-        [self.statusItem.button setImagePosition:NSImageLeading];
-    }
-    
+    // Update initial status
     [self updateStatus];
     
-    // Update every 30 seconds
-    self.updateTimer = [NSTimer scheduledTimerWithTimeInterval:30.0
+    // Update every 10 seconds
+    self.updateTimer = [NSTimer scheduledTimerWithTimeInterval:10.0
                                                         target:self
                                                       selector:@selector(updateStatus)
                                                       userInfo:nil
@@ -244,9 +214,9 @@ cat > "src/AppDelegate.m" << 'EOF'
     NSMenu *menu = [[NSMenu alloc] init];
     
     // Storage info header (non-clickable)
-    NSMenuItem *headerItem = [[NSMenuItem alloc] initWithTitle:@"SSD Storage" action:nil keyEquivalent:@""];
-    headerItem.enabled = NO;
-    [menu addItem:headerItem];
+    self.detailsMenuItem = [[NSMenuItem alloc] initWithTitle:@"SSD Storage" action:nil keyEquivalent:@""];
+    self.detailsMenuItem.enabled = NO;
+    [menu addItem:self.detailsMenuItem];
     
     [menu addItem:[NSMenuItem separatorItem]];
     
@@ -295,51 +265,31 @@ cat > "src/AppDelegate.m" << 'EOF'
     
     unsigned long long total = [storageInfo[@"total"] unsignedLongLongValue];
     unsigned long long used = [storageInfo[@"used"] unsignedLongLongValue];
-    double usedPercent = [storageInfo[@"usedPercent"] doubleValue];
     BOOL isSSD = [storageInfo[@"isSSD"] boolValue];
     
-    // Format as "SSD: 256.3 GB / 512.0 GB"
-    NSString *usedStr = [self.monitor formatBytes:used];
-    NSString *totalStr = [self.monitor formatBytes:total];
+    // Format as "SSD: 93/956gb" - short format
+    NSString *usedStr = [self.monitor formatBytesShort:used];
+    NSString *totalStr = [self.monitor formatBytesShort:total];
     
-    // Short format for menu bar
-    NSString *title = [NSString stringWithFormat:@"SSD: %@ / %@", usedStr, totalStr];
+    // Remove spaces between number and unit for compact display
+    usedStr = [usedStr stringByReplacingOccurrencesOfString:@" " withString:@""];
+    totalStr = [totalStr stringByReplacingOccurrencesOfString:@" " withString:@""];
     
-    // Add a small bar indicator
-    int barLength = 8;
-    int filled = (int)(usedPercent / 100.0 * barLength);
-    NSMutableString *bar = [NSMutableString string];
-    [bar appendString:@"["];
-    for (int i = 0; i < barLength; i++) {
-        if (i < filled) {
-            // Color indicator based on usage
-            if (usedPercent > 90) {
-                [bar appendString:@"🔴"];
-            } else if (usedPercent > 75) {
-                [bar appendString:@"🟡"];
-            } else {
-                [bar appendString:@"🟢"];
-            }
-        } else {
-            [bar appendString:@"·"];
-        }
-    }
-    [bar appendString:@"]"];
+    // Menu bar text: "SSD: 93/956gb"
+    NSString *type = isSSD ? @"SSD" : @"HDD";
+    self.statusItem.button.title = [NSString stringWithFormat:@"%@: %@/%@", type, usedStr, totalStr];
     
-    self.statusItem.button.title = [NSString stringWithFormat:@"%@ %.0f%%", bar, usedPercent];
-    
-    // Update menu items with details
-    NSMenuItem *detailsItem = [self.statusItem.menu itemAtIndex:0];
-    if (detailsItem) {
-        NSString *type = isSSD ? @"SSD" : @"Hard Drive";
-        detailsItem.title = [NSString stringWithFormat:@"💾 %@: %@ / %@ (%.1f%%)", 
-                            type, usedStr, totalStr, usedPercent];
+    // Update menu details
+    if (self.detailsMenuItem) {
+        NSString *usedFull = [self.monitor formatBytes:used];
+        NSString *totalFull = [self.monitor formatBytes:total];
+        double usedPercent = (double)used / total * 100;
+        self.detailsMenuItem.title = [NSString stringWithFormat:@"💾 %@: %@ / %@ (%.1f%%)", 
+                                      type, usedFull, totalFull, usedPercent];
     }
 }
 
 - (void)openStorageManagement:(id)sender {
-    // Open System Settings > Storage (macOS Ventura+)
-    // Fallback to About This Mac > Storage for older versions
     NSURL *url;
     if (@available(macOS 13.0, *)) {
         url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.settings.Storage"];
@@ -350,7 +300,6 @@ cat > "src/AppDelegate.m" << 'EOF'
     if (url) {
         [[NSWorkspace sharedWorkspace] openURL:url];
     } else {
-        // Fallback: open Disk Utility
         [self openDiskUtility:sender];
     }
 }
@@ -429,9 +378,10 @@ EOF
 
 cp "Info.plist" "$APP_BUNDLE/Contents/"
 
-# Copy icon if downloaded
-if [ -f "ssd-icon.png" ]; then
-    cp "ssd-icon.png" "$APP_BUNDLE/Contents/Resources/app_icon.png"
+# Copy the app icon (for Finder/Dock)
+if [ -f "app_icon.icns" ]; then
+    cp "app_icon.icns" "$APP_BUNDLE/Contents/Resources/app_icon.icns"
+    echo "✅ App icon added to bundle"
 fi
 
 # Compile
@@ -461,11 +411,11 @@ echo ""
 echo -e "${CYAN}🚀 Launch from Applications or Desktop${NC}"
 echo ""
 echo -e "${GREEN}✨ Features:${NC}"
-echo "   • Real-time SSD storage usage in menu bar"
-echo "   • Visual usage bar with color coding (🟢🟡🔴)"
-echo "   • Click to open Storage Management"
-echo "   • Click to open Disk Utility"
-echo "   • Auto-refreshes every 30 seconds"
+echo "   • Clean menu bar display: SSD: 93/956gb"
+echo "   • No icon in menu bar - just text"
+echo "   • App icon used for Finder/Dock (downloaded from GitHub)"
+echo "   • Click for Storage Management and Disk Utility"
+echo "   • Auto-refreshes every 10 seconds"
 echo ""
 
 # Launch the app
