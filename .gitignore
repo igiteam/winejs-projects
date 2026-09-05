@@ -1,0 +1,5 @@
+# Ignore all folders by default
+*/
+
+# But exclude (allow) specific folders you want to track
+!stuff/
