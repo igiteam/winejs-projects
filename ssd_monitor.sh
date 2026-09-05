@@ -25,40 +25,51 @@ mkdir -p "$APP_NAME/src"
 cd "$APP_NAME" || exit
 
 # ===============================================
-# CREATE ICON (download from your URL)
+# CREATE ICON (EXACTLY LIKE YOUR FLIPBOOK APP)
 # ===============================================
 echo -e "${CYAN}🎨 Downloading SSD icon...${NC}"
 
 ICON_URL="https://raw.githubusercontent.com/igiteam/winejs/refs/heads/main/images/ssd-icon.png"
-ICON_FILE="ssd-icon.png"
+ICON_FILE="appicon.${ICON_URL##*.}"
+ICON_FILE="${ICON_FILE%\?*}"
 
 echo "📥 Downloading icon from: $ICON_URL"
-curl -s -L "$ICON_URL" -o "$ICON_FILE"
+curl -s -L "$ICON_URL" -o "/tmp/$ICON_FILE"
 
-if [ -f "$ICON_FILE" ] && [ -s "$ICON_FILE" ]; then
+if [ -f "/tmp/$ICON_FILE" ] && [ -s "/tmp/$ICON_FILE" ]; then
     echo "✅ Icon downloaded successfully!"
     
-    # Create iconset for the app bundle
-    mkdir -p AppIcon.iconset
+    mkdir -p public
+    cp "/tmp/$ICON_FILE" "public/app_icon.png"
     
-    # Generate various sizes for the app icon
+    ICONSET_DIR="public/AppIcon.iconset"
+    mkdir -p "$ICONSET_DIR"
+    
     for SIZE in 16 32 64 128 256 512 1024; do
-        sips -z $SIZE $SIZE "$ICON_FILE" --out "AppIcon.iconset/icon_${SIZE}x${SIZE}.png" 2>/dev/null || true
+        sips -z $SIZE $SIZE "public/app_icon.png" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}.png" 2>/dev/null || true
         RETINA=$((SIZE * 2))
-        sips -z $RETINA $RETINA "$ICON_FILE" --out "AppIcon.iconset/icon_${SIZE}x${SIZE}@2x.png" 2>/dev/null || true
+        sips -z $RETINA $RETINA "public/app_icon.png" --out "$ICONSET_DIR/icon_${SIZE}x${SIZE}@2x.png" 2>/dev/null || true
     done
     
     if command -v iconutil &> /dev/null; then
-        iconutil -c icns "AppIcon.iconset" -o "app_icon.icns" 2>/dev/null
+        iconutil -c icns "$ICONSET_DIR" -o "public/app_icon.icns" 2>/dev/null
         echo "✅ Created .icns file"
     else
-        cp "$ICON_FILE" "app_icon.icns"
+        cp "public/app_icon.png" "public/app_icon.icns"
     fi
     
-    rm -rf "AppIcon.iconset"
+    rm -rf "$ICONSET_DIR"
 else
-    echo "⚠ Download failed, using fallback icon"
-    echo "💾" > app_icon.txt
+    echo "⚠ Download failed, creating fallback icon"
+    mkdir -p public
+    cat > public/app_icon.png.b64 << 'EOF'
+iVBORw0KGgoAAAANSUhEUgAAAgAAAAIAAQMAAADOtgr5AAAAAXNSR0IB2cksfwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAANQTFRFAAAAp3o92gAAABxJREFUeJztwTEBAAAAwqD1T20Hb6AAAAAAAAA+Bhw4AAG1cXrRAAAAAElFTkSuQmCC
+EOF
+    base64 -D < public/app_icon.png.b64 > public/app_icon.png 2>/dev/null || {
+        echo "💾" > public/app_icon.txt
+    }
+    cp public/app_icon.png public/app_icon.icns 2>/dev/null
+    echo -e "${GREEN}✅ Created fallback icon${NC}"
 fi
 
 # ===============================================
@@ -346,7 +357,7 @@ APP_BUNDLE="$APP_NAME.app"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/"{MacOS,Resources}
 
-# Create Info.plist
+# Create Info.plist WITH ICON SUPPORT
 cat > "Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -366,6 +377,8 @@ cat > "Info.plist" << EOF
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>$APP_NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>app_icon</string>
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
     <key>LSUIElement</key>
@@ -378,10 +391,15 @@ EOF
 
 cp "Info.plist" "$APP_BUNDLE/Contents/"
 
-# Copy the app icon (for Finder/Dock)
-if [ -f "app_icon.icns" ]; then
-    cp "app_icon.icns" "$APP_BUNDLE/Contents/Resources/app_icon.icns"
-    echo "✅ App icon added to bundle"
+# Copy the app icon (for Finder/Dock) - FROM PUBLIC FOLDER
+if [ -f "public/app_icon.icns" ]; then
+    cp "public/app_icon.icns" "$APP_BUNDLE/Contents/Resources/app_icon.icns"
+    echo "✅ App icon added to bundle (ICNS)"
+elif [ -f "public/app_icon.png" ]; then
+    cp "public/app_icon.png" "$APP_BUNDLE/Contents/Resources/app_icon.png"
+    echo "✅ App icon added to bundle (PNG)"
+else
+    echo "⚠ No icon found, app will use default"
 fi
 
 # Compile
